@@ -54,7 +54,7 @@ var (
 const (
 	schemeICAP                      = "icap"
 	icapVersion                     = "ICAP/1.0"
-	httpVersion                     = "HTTP/1.1"
+	httpVersion                     = "HTTP/1."
 	schemeHTTPReq                   = "http_request"
 	schemeHTTPResp                  = "http_response"
 	crlf                            = "\r\n"
@@ -366,14 +366,14 @@ func toClientResponse(b *bufio.Reader) (Response, error) {
 				continue
 			}
 
-			if ss[0] == httpVersion {
+			if strings.HasPrefix(ss[0], httpVersion) {
 				scheme = schemeHTTPResp
 				httpMsg = ""
 			}
 
 			// http request message scheme version should always be at the end,
 			// for example, GET /something HTTP/1.1
-			if strings.TrimSpace(ss[2]) == httpVersion {
+			if strings.HasPrefix(strings.TrimSpace(ss[2]), httpVersion) {
 				scheme = schemeHTTPReq
 				httpMsg = ""
 			}
