@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	icapclient "github.com/opencloud-eu/icap-client"
 	"github.com/phayes/freeport"
+	icapclient "github.com/rosmo/icap-client"
 )
 
 func TestICAPConn_Send(t *testing.T) {

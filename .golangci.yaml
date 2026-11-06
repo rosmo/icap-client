@@ -21,7 +21,7 @@ linters-settings:
     sections:
       - standard
       - default
-      - prefix(github.com/opencloud-eu/woodpecker-ci-config-service)
+      - prefix(github.com/rosmo/woodpecker-ci-config-service)
   godot:
     scope: toplevel
     period: true

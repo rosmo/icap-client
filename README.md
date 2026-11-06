@@ -6,11 +6,11 @@
 
 ## Contributing
  
-Please follow the [OpenCloud Contribution Guidelines](https://github.com/opencloud-eu/opencloud/blob/main/CONTRIBUTING.md), which apply to all projects in the OpenCloud organization.
+Please follow the [OpenCloud Contribution Guidelines](https://github.com/rosmo/opencloud/blob/main/CONTRIBUTING.md), which apply to all projects in the OpenCloud organization.
 
 ## Acknowledgements
 
-This project is forked from [@egirna/icap-client](https://github.com/egirna/icap-client).  
+This project is forked from [@opencloud-eu/icap-client](https://github.com/opencloud-eu/icap-client).  
 Special thanks to [egirna](https://github.com/egirna) for the original implementation and ongoing inspiration.
 
 ### License
