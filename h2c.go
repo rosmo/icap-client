@@ -20,10 +20,23 @@ type DialContextFunc func(ctx context.Context, network, address string) (net.Con
 // HTTP/2 cleartext (h2c) tunnel using the HTTP CONNECT method.
 // If rt is nil, a default unencrypted HTTP/2 transport is used.
 func NewH2CDialContext(rt http.RoundTripper) DialContextFunc {
-	return newH2CDialContext(rt, 0)
+	return newH2CDialContext(rt, 0, nil)
 }
 
-func newH2CDialContext(rt http.RoundTripper, timeout time.Duration) DialContextFunc {
+// NewH2CDialContextWithHeader returns a DialContextFunc that wraps the connection in an
+// HTTP/2 cleartext (h2c) tunnel using the HTTP CONNECT method and includes the provided headers
+// in the CONNECT request.
+// If rt is nil, a default unencrypted HTTP/2 transport is used.
+func NewH2CDialContextWithHeader(rt http.RoundTripper, header http.Header) DialContextFunc {
+	return newH2CDialContext(rt, 0, header)
+}
+
+func newH2CDialContext(rt http.RoundTripper, timeout time.Duration, header http.Header) DialContextFunc {
+	var clonedHeader http.Header
+	if len(header) > 0 {
+		clonedHeader = header.Clone()
+	}
+
 	return func(ctx context.Context, network, address string) (net.Conn, error) {
 		roundTripper := rt
 		var ownedTransport *http.Transport
@@ -41,6 +54,11 @@ func newH2CDialContext(rt http.RoundTripper, timeout time.Duration) DialContextF
 			return nil, err
 		}
 		req.ContentLength = -1
+		for k, vals := range clonedHeader {
+			for _, v := range vals {
+				req.Header.Add(k, v)
+			}
+		}
 
 		resp, err := roundTripper.RoundTrip(req)
 		if err != nil {
@@ -139,6 +157,15 @@ func (c *h2cConn) Write(b []byte) (int, error) {
 }
 
 func (c *h2cConn) Close() error {
+	writeErr := c.writer.Close()
+
+	// Wait for the peer to acknowledge END_STREAM and close its side of the
+	// tunnel so net/http does not send RST_STREAM (CANCEL) on an active stream.
+	if !c.readTimedOut.Load() {
+		_ = c.SetReadDeadline(time.Now().Add(2 * time.Second))
+		_, _ = io.Copy(io.Discard, c.reader)
+	}
+
 	c.mu.Lock()
 	if c.readTimer != nil {
 		c.readTimer.Stop()
@@ -150,12 +177,12 @@ func (c *h2cConn) Close() error {
 	}
 	c.mu.Unlock()
 
-	err := errors.Join(c.writer.Close(), c.reader.Close())
+	readErr := c.reader.Close()
 	if c.ownedTransport != nil {
 		c.ownedTransport.CloseIdleConnections()
 	}
 
-	return err
+	return errors.Join(writeErr, readErr)
 }
 
 func (c *h2cConn) LocalAddr() net.Addr {

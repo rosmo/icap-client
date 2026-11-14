@@ -77,6 +77,9 @@ func TestH2CTunnel_ICAPConn_Send(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
+			serverDone := make(chan error, 1)
+			var gotConnectHeader string
+
 			addr, cleanup := startH2CTunnelServer(t, func(w http.ResponseWriter, r *http.Request) {
 				if r.Method != http.MethodConnect {
 					http.Error(w, "expected CONNECT", http.StatusMethodNotAllowed)
@@ -86,6 +89,7 @@ func TestH2CTunnel_ICAPConn_Send(t *testing.T) {
 					http.Error(w, "expected HTTP/2", http.StatusHTTPVersionNotSupported)
 					return
 				}
+				gotConnectHeader = r.Header.Get("X-Tunnel-Auth")
 
 				rc := http.NewResponseController(w)
 				w.WriteHeader(http.StatusOK)
@@ -94,17 +98,24 @@ func TestH2CTunnel_ICAPConn_Send(t *testing.T) {
 				buf := make([]byte, 1024)
 				_, err := r.Body.Read(buf)
 				if err != nil && !errors.Is(err, io.EOF) {
+					serverDone <- err
 					return
 				}
 
 				_, _ = w.Write([]byte(tc.response))
 				_ = rc.Flush()
+
+				_, copyErr := io.Copy(io.Discard, r.Body)
+				serverDone <- copyErr
 			})
 			defer cleanup()
 
 			clientConn, err := icapclient.NewICAPConn(icapclient.ICAPConnConfig{
 				Timeout:   5 * time.Second,
 				H2CTunnel: true,
+				H2CConnectHeader: http.Header{
+					"X-Tunnel-Auth": []string{"secret-token"},
+				},
 			})
 			if err != nil {
 				t.Fatal(err)
@@ -113,7 +124,6 @@ func TestH2CTunnel_ICAPConn_Send(t *testing.T) {
 			if err := clientConn.Connect(t.Context(), addr); err != nil {
 				t.Fatal(err)
 			}
-			defer clientConn.Close()
 
 			res, err := clientConn.Send([]byte("OPTIONS icap://localhost/ ICAP/1.0\r\n\r\n"))
 			if err != nil {
@@ -122,6 +132,18 @@ func TestH2CTunnel_ICAPConn_Send(t *testing.T) {
 
 			if got := string(res); got != tc.want {
 				t.Errorf("ICAPConn.Send() = %q, want %q", got, tc.want)
+			}
+
+			if gotConnectHeader != "secret-token" {
+				t.Errorf("CONNECT header X-Tunnel-Auth = %q, want %q", gotConnectHeader, "secret-token")
+			}
+
+			if err := clientConn.Close(); err != nil {
+				t.Fatalf("ICAPConn.Close() error = %v", err)
+			}
+
+			if copyErr := <-serverDone; copyErr != nil {
+				t.Fatalf("unexpected server r.Body error on close: %v", copyErr)
 			}
 		})
 	}

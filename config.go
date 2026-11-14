@@ -52,6 +52,16 @@ func WithH2CTunnel() ConfigOption {
 func WithH2CTransport(rt http.RoundTripper) ConfigOption {
 	return func(cfg *Config) {
 		cfg.ICAPConn.H2CTunnel = true
-		cfg.ICAPConn.DialContext = NewH2CDialContext(rt)
+		cfg.ICAPConn.H2CTransport = rt
+	}
+}
+
+// WithH2CConnectHeader sets custom HTTP headers to include in the HTTP/2 h2c CONNECT request.
+func WithH2CConnectHeader(header http.Header) ConfigOption {
+	return func(cfg *Config) {
+		if header == nil {
+			return
+		}
+		cfg.ICAPConn.H2CConnectHeader = header.Clone()
 	}
 }

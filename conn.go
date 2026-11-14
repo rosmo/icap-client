@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"net/http"
 	"sync"
 	"time"
 )
@@ -19,6 +20,10 @@ type ICAPConnConfig struct {
 	DialContext DialContextFunc
 	// H2CTunnel wraps the ICAP connection in an HTTP/2 h2c tunnel using CONNECT.
 	H2CTunnel bool
+	// H2CTransport specifies a custom http.RoundTripper for the HTTP/2 h2c CONNECT tunnel.
+	H2CTransport http.RoundTripper
+	// H2CConnectHeader specifies custom HTTP headers to include in the HTTP/2 CONNECT request.
+	H2CConnectHeader http.Header
 }
 
 // ICAPConn manages the transport layer for ICAP protocol.
@@ -32,8 +37,8 @@ type ICAPConn struct {
 // NewICAPConn creates a new connection configuration.
 func NewICAPConn(conf ICAPConnConfig) (*ICAPConn, error) {
 	dialContext := conf.DialContext
-	if dialContext == nil && conf.H2CTunnel {
-		dialContext = newH2CDialContext(nil, conf.Timeout)
+	if dialContext == nil && (conf.H2CTunnel || conf.H2CTransport != nil) {
+		dialContext = newH2CDialContext(conf.H2CTransport, conf.Timeout, conf.H2CConnectHeader)
 	}
 
 	return &ICAPConn{

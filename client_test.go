@@ -428,6 +428,10 @@ func TestClient_Do(t *testing.T) {
 					http.Error(w, "bad request", http.StatusBadRequest)
 					return
 				}
+				if r.Header.Get("X-Proxy-Token") != "valid-token" {
+					http.Error(w, "missing header", http.StatusForbidden)
+					return
+				}
 
 				backend, err := net.Dial("tcp", fmt.Sprintf("localhost:%d", port))
 				if err != nil {
@@ -443,17 +447,20 @@ func TestClient_Do(t *testing.T) {
 				done := make(chan struct{})
 				go func() {
 					defer close(done)
-					_, _ = io.Copy(backend, r.Body)
+					if _, copyErr := io.Copy(backend, r.Body); copyErr != nil {
+						t.Errorf("unexpected error copying from client to target: %v", copyErr)
+					}
+					_ = backend.Close()
 				}()
 
 				buf := make([]byte, 4096)
 				for {
-					n, err := backend.Read(buf)
+					n, readErr := backend.Read(buf)
 					if n > 0 {
 						_, _ = w.Write(buf[:n])
 						_ = rc.Flush()
 					}
-					if err != nil {
+					if readErr != nil {
 						break
 					}
 				}
@@ -470,21 +477,34 @@ func TestClient_Do(t *testing.T) {
 		}
 		defer customTransport.CloseIdleConnections()
 
+		connectHdr := http.Header{
+			"X-Proxy-Token": []string{"valid-token"},
+		}
+
 		clients := []struct {
 			name string
 			opts []ConfigOption
 		}{
 			{
 				name: "WithH2CTunnel",
-				opts: []ConfigOption{WithH2CTunnel(), WithICAPConnectionTimeout(5 * time.Second)},
+				opts: []ConfigOption{
+					WithH2CTunnel(),
+					WithH2CConnectHeader(connectHdr),
+					WithICAPConnectionTimeout(5 * time.Second),
+				},
 			},
 			{
 				name: "WithH2CTransport",
-				opts: []ConfigOption{WithH2CTransport(customTransport)},
+				opts: []ConfigOption{
+					WithH2CTransport(customTransport),
+					WithH2CConnectHeader(connectHdr),
+				},
 			},
 			{
 				name: "WithDialContext",
-				opts: []ConfigOption{WithDialContext(NewH2CDialContext(nil))},
+				opts: []ConfigOption{
+					WithDialContext(NewH2CDialContextWithHeader(nil, connectHdr)),
+				},
 			},
 		}
 
