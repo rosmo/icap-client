@@ -3,11 +3,13 @@ package icapclient
 import (
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"reflect"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestClient_Do(t *testing.T) {
@@ -405,6 +407,147 @@ func TestClient_Do(t *testing.T) {
 			if resp.Status != sample.wantedStatus {
 				t.Errorf("Wanted status:%s, got:%s", sample.wantedStatus, resp.Status)
 			}
+		}
+	})
+
+	t.Run("Client Do over H2C Tunnel", func(t *testing.T) {
+		h2cLn, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer h2cLn.Close()
+
+		protocols := new(http.Protocols)
+		protocols.SetUnencryptedHTTP2(true)
+
+		h2cServer := &http.Server{
+			Protocols:         protocols,
+			ReadHeaderTimeout: 5 * time.Second,
+			Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodConnect || r.ProtoMajor != 2 {
+					http.Error(w, "bad request", http.StatusBadRequest)
+					return
+				}
+
+				backend, err := net.Dial("tcp", fmt.Sprintf("localhost:%d", port))
+				if err != nil {
+					http.Error(w, err.Error(), http.StatusBadGateway)
+					return
+				}
+				defer backend.Close()
+
+				rc := http.NewResponseController(w)
+				w.WriteHeader(http.StatusOK)
+				_ = rc.Flush()
+
+				done := make(chan struct{})
+				go func() {
+					defer close(done)
+					_, _ = io.Copy(backend, r.Body)
+				}()
+
+				buf := make([]byte, 4096)
+				for {
+					n, err := backend.Read(buf)
+					if n > 0 {
+						_, _ = w.Write(buf[:n])
+						_ = rc.Flush()
+					}
+					if err != nil {
+						break
+					}
+				}
+				<-done
+			}),
+		}
+		go func() {
+			_ = h2cServer.Serve(h2cLn)
+		}()
+		defer h2cServer.Close()
+
+		customTransport := &http.Transport{
+			Protocols: protocols,
+		}
+		defer customTransport.CloseIdleConnections()
+
+		clients := []struct {
+			name string
+			opts []ConfigOption
+		}{
+			{
+				name: "WithH2CTunnel",
+				opts: []ConfigOption{WithH2CTunnel(), WithICAPConnectionTimeout(5 * time.Second)},
+			},
+			{
+				name: "WithH2CTransport",
+				opts: []ConfigOption{WithH2CTransport(customTransport)},
+			},
+			{
+				name: "WithDialContext",
+				opts: []ConfigOption{WithDialContext(NewH2CDialContext(nil))},
+			},
+		}
+
+		for _, tc := range clients {
+			t.Run(tc.name, func(t *testing.T) {
+				urlStr := fmt.Sprintf("icap://%s/respmod", h2cLn.Addr().String())
+
+				optReq, err := NewRequest(t.Context(), MethodOPTIONS, urlStr, nil, nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+
+				client, err := NewClient(tc.opts...)
+				if err != nil {
+					t.Fatal(err)
+				}
+
+				optResp, err := client.Do(optReq)
+				if err != nil {
+					t.Fatal(err)
+				}
+
+				if optResp.StatusCode != http.StatusOK {
+					t.Fatalf("Wanted OPTIONS status code:%d, got:%d", http.StatusOK, optResp.StatusCode)
+				}
+
+				httpReq, err := http.NewRequest(http.MethodGet, "http://someurl.com", nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+
+				httpResp := &http.Response{
+					Status:     "200 OK",
+					StatusCode: http.StatusOK,
+					Proto:      "HTTP/1.0",
+					ProtoMajor: 1,
+					ProtoMinor: 0,
+					Header: http.Header{
+						"Content-Type":   []string{"plain/text"},
+						"Content-Length": []string{"41"},
+					},
+					ContentLength: 41,
+					Body:          io.NopCloser(strings.NewReader("Hello World!This is a GOOD FILE! bye bye!")),
+				}
+
+				req, err := NewRequest(t.Context(), MethodRESPMOD, urlStr, httpReq, httpResp)
+				if err != nil {
+					t.Fatal(err)
+				}
+
+				if err := req.extendHeader(optResp.Header); err != nil {
+					t.Fatal(err)
+				}
+
+				resp, err := client.Do(req)
+				if err != nil {
+					t.Fatal(err)
+				}
+
+				if resp.StatusCode != http.StatusNoContent {
+					t.Errorf("Wanted status code:%d, got:%d", http.StatusNoContent, resp.StatusCode)
+				}
+			})
 		}
 	})
 

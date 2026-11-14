@@ -14,26 +14,43 @@ import (
 type ICAPConnConfig struct {
 	// Timeout is the maximum amount of time a connection will be kept open
 	Timeout time.Duration
+	// DialContext specifies the dial function for creating connections.
+	// If DialContext is nil, then the connection dials using net.Dialer (or h2c if H2CTunnel is true).
+	DialContext DialContextFunc
+	// H2CTunnel wraps the ICAP connection in an HTTP/2 h2c tunnel using CONNECT.
+	H2CTunnel bool
 }
 
 // ICAPConn manages the transport layer for ICAP protocol.
 type ICAPConn struct {
-	tcp     net.Conn
-	mu      sync.Mutex
-	timeout time.Duration
+	tcp         net.Conn
+	mu          sync.Mutex
+	timeout     time.Duration
+	dialContext DialContextFunc
 }
 
 // NewICAPConn creates a new connection configuration.
 func NewICAPConn(conf ICAPConnConfig) (*ICAPConn, error) {
+	dialContext := conf.DialContext
+	if dialContext == nil && conf.H2CTunnel {
+		dialContext = newH2CDialContext(nil, conf.Timeout)
+	}
+
 	return &ICAPConn{
-		timeout: conf.Timeout,
+		timeout:     conf.Timeout,
+		dialContext: dialContext,
 	}, nil
 }
 
 // Connect connects to the ICAP server.
 func (c *ICAPConn) Connect(ctx context.Context, address string) error {
-	dialer := net.Dialer{Timeout: c.timeout}
-	conn, err := dialer.DialContext(ctx, "tcp", address)
+	dial := c.dialContext
+	if dial == nil {
+		dialer := net.Dialer{Timeout: c.timeout}
+		dial = dialer.DialContext
+	}
+
+	conn, err := dial(ctx, "tcp", address)
 	if err != nil {
 		return err
 	}

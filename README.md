@@ -4,6 +4,11 @@
 [![Matrix](https://img.shields.io/matrix/opencloud%3Amatrix.org?logo=matrix)](https://app.element.io/#/room/#opencloud:matrix.org)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 
+## Changes compared to fork
+
+- Fix HTTP/1.0 processing
+- Add option to wrap ICAP connections in HTTP/2 cleartext tunnel
+
 ## Contributing
  
 Please follow the [OpenCloud Contribution Guidelines](https://github.com/rosmo/opencloud/blob/main/CONTRIBUTING.md), which apply to all projects in the OpenCloud organization.
