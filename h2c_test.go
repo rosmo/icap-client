@@ -1,11 +1,13 @@
 package icapclient_test
 
 import (
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"testing"
 	"time"
@@ -146,6 +148,82 @@ func TestH2CTunnel_ICAPConn_Send(t *testing.T) {
 				t.Fatalf("unexpected server r.Body error on close: %v", copyErr)
 			}
 		})
+	}
+}
+
+func TestH2TLSTunnel_ICAPConn_Send(t *testing.T) {
+	t.Parallel()
+
+	serverDone := make(chan error, 1)
+	var gotConnectHeader string
+
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodConnect {
+			http.Error(w, "expected CONNECT", http.StatusMethodNotAllowed)
+			return
+		}
+		if r.ProtoMajor != 2 || r.TLS == nil {
+			http.Error(w, "expected HTTP/2 over TLS", http.StatusHTTPVersionNotSupported)
+			return
+		}
+		gotConnectHeader = r.Header.Get("X-Tunnel-Auth")
+
+		rc := http.NewResponseController(w)
+		w.WriteHeader(http.StatusOK)
+		_ = rc.Flush()
+
+		buf := make([]byte, 1024)
+		_, err := r.Body.Read(buf)
+		if err != nil && !errors.Is(err, io.EOF) {
+			serverDone <- err
+			return
+		}
+
+		_, _ = w.Write([]byte(icapclient.ICAP204NoModsMsg))
+		_ = rc.Flush()
+
+		_, copyErr := io.Copy(io.Discard, r.Body)
+		serverDone <- copyErr
+	}))
+	srv.EnableHTTP2 = true
+	srv.StartTLS()
+	defer srv.Close()
+
+	clientConn, err := icapclient.NewICAPConn(icapclient.ICAPConnConfig{
+		Timeout:   5 * time.Second,
+		H2Tunnel:  true,
+		TLSConfig: &tls.Config{InsecureSkipVerify: true},
+		H2CConnectHeader: http.Header{
+			"X-Tunnel-Auth": []string{"tls-secret-token"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := clientConn.Connect(t.Context(), srv.Listener.Addr().String()); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := clientConn.Send([]byte("OPTIONS icap://localhost/ ICAP/1.0\r\n\r\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got := string(res); got != icapclient.ICAP204NoModsMsg {
+		t.Errorf("ICAPConn.Send() = %q, want %q", got, icapclient.ICAP204NoModsMsg)
+	}
+
+	if gotConnectHeader != "tls-secret-token" {
+		t.Errorf("CONNECT header X-Tunnel-Auth = %q, want %q", gotConnectHeader, "tls-secret-token")
+	}
+
+	if err := clientConn.Close(); err != nil {
+		t.Fatalf("ICAPConn.Close() error = %v", err)
+	}
+
+	if copyErr := <-serverDone; copyErr != nil {
+		t.Fatalf("unexpected server r.Body error on close: %v", copyErr)
 	}
 }
 

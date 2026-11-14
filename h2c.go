@@ -2,6 +2,7 @@ package icapclient
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
@@ -20,7 +21,7 @@ type DialContextFunc func(ctx context.Context, network, address string) (net.Con
 // HTTP/2 cleartext (h2c) tunnel using the HTTP CONNECT method.
 // If rt is nil, a default unencrypted HTTP/2 transport is used.
 func NewH2CDialContext(rt http.RoundTripper) DialContextFunc {
-	return newH2CDialContext(rt, 0, nil)
+	return newH2TunnelDialContext(rt, 0, nil, false, nil)
 }
 
 // NewH2CDialContextWithHeader returns a DialContextFunc that wraps the connection in an
@@ -28,26 +29,61 @@ func NewH2CDialContext(rt http.RoundTripper) DialContextFunc {
 // in the CONNECT request.
 // If rt is nil, a default unencrypted HTTP/2 transport is used.
 func NewH2CDialContextWithHeader(rt http.RoundTripper, header http.Header) DialContextFunc {
-	return newH2CDialContext(rt, 0, header)
+	return newH2TunnelDialContext(rt, 0, header, false, nil)
 }
 
-func newH2CDialContext(rt http.RoundTripper, timeout time.Duration, header http.Header) DialContextFunc {
+// NewH2DialContext returns a DialContextFunc that wraps the connection in an
+// encrypted HTTP/2 (h2 over TLS) tunnel using the HTTP CONNECT method.
+// If rt is nil, a default TLS HTTP/2 transport is used with the provided tlsConfig.
+func NewH2DialContext(rt http.RoundTripper, tlsConfig *tls.Config) DialContextFunc {
+	return newH2TunnelDialContext(rt, 0, nil, true, tlsConfig)
+}
+
+// NewH2DialContextWithHeader returns a DialContextFunc that wraps the connection in an
+// encrypted HTTP/2 (h2 over TLS) tunnel using the HTTP CONNECT method and includes the provided
+// headers in the CONNECT request.
+// If rt is nil, a default TLS HTTP/2 transport is used with the provided tlsConfig.
+func NewH2DialContextWithHeader(rt http.RoundTripper, tlsConfig *tls.Config, header http.Header) DialContextFunc {
+	return newH2TunnelDialContext(rt, 0, header, true, tlsConfig)
+}
+
+func newH2TunnelDialContext(
+	rt http.RoundTripper,
+	timeout time.Duration,
+	header http.Header,
+	useTLS bool,
+	tlsConfig *tls.Config,
+) DialContextFunc {
 	var clonedHeader http.Header
 	if len(header) > 0 {
 		clonedHeader = header.Clone()
+	}
+
+	var clonedTLS *tls.Config
+	if tlsConfig != nil {
+		clonedTLS = tlsConfig.Clone()
+	}
+
+	scheme := "http"
+	if useTLS {
+		scheme = "https"
 	}
 
 	return func(ctx context.Context, network, address string) (net.Conn, error) {
 		roundTripper := rt
 		var ownedTransport *http.Transport
 		if roundTripper == nil {
-			ownedTransport = defaultH2CTransport(timeout)
+			if useTLS {
+				ownedTransport = defaultH2Transport(timeout, clonedTLS)
+			} else {
+				ownedTransport = defaultH2CTransport(timeout)
+			}
 			roundTripper = ownedTransport
 		}
 
 		pr, pw := io.Pipe()
 
-		req, err := http.NewRequestWithContext(ctx, http.MethodConnect, "http://"+address, pr)
+		req, err := http.NewRequestWithContext(ctx, http.MethodConnect, scheme+"://"+address, pr)
 		if err != nil {
 			_ = pr.Close()
 			_ = pw.Close()
@@ -105,6 +141,27 @@ func defaultH2CTransport(timeout time.Duration) *http.Transport {
 	return &http.Transport{
 		Protocols:   protocols,
 		DialContext: dialer.DialContext,
+	}
+}
+
+func defaultH2Transport(timeout time.Duration, tlsConfig *tls.Config) *http.Transport {
+	protocols := new(http.Protocols)
+	protocols.SetHTTP2(true)
+
+	dialer := &net.Dialer{
+		Timeout: timeout,
+	}
+
+	var clonedTLS *tls.Config
+	if tlsConfig != nil {
+		clonedTLS = tlsConfig.Clone()
+	}
+
+	return &http.Transport{
+		Protocols:         protocols,
+		ForceAttemptHTTP2: true,
+		DialContext:       dialer.DialContext,
+		TLSClientConfig:   clonedTLS,
 	}
 }
 

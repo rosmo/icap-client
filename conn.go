@@ -3,6 +3,7 @@ package icapclient
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"errors"
 	"io"
 	"net"
@@ -16,11 +17,15 @@ type ICAPConnConfig struct {
 	// Timeout is the maximum amount of time a connection will be kept open
 	Timeout time.Duration
 	// DialContext specifies the dial function for creating connections.
-	// If DialContext is nil, then the connection dials using net.Dialer (or h2c if H2CTunnel is true).
+	// If DialContext is nil, then the connection dials using net.Dialer (or h2c/h2 if enabled).
 	DialContext DialContextFunc
 	// H2CTunnel wraps the ICAP connection in an HTTP/2 h2c tunnel using CONNECT.
 	H2CTunnel bool
-	// H2CTransport specifies a custom http.RoundTripper for the HTTP/2 h2c CONNECT tunnel.
+	// H2Tunnel wraps the ICAP connection in an encrypted HTTP/2 (h2 over TLS) tunnel using CONNECT.
+	H2Tunnel bool
+	// TLSConfig specifies the TLS configuration for H2Tunnel when H2CTransport is not provided.
+	TLSConfig *tls.Config
+	// H2CTransport specifies a custom http.RoundTripper for the HTTP/2 CONNECT tunnel.
 	H2CTransport http.RoundTripper
 	// H2CConnectHeader specifies custom HTTP headers to include in the HTTP/2 CONNECT request.
 	H2CConnectHeader http.Header
@@ -37,8 +42,14 @@ type ICAPConn struct {
 // NewICAPConn creates a new connection configuration.
 func NewICAPConn(conf ICAPConnConfig) (*ICAPConn, error) {
 	dialContext := conf.DialContext
-	if dialContext == nil && (conf.H2CTunnel || conf.H2CTransport != nil) {
-		dialContext = newH2CDialContext(conf.H2CTransport, conf.Timeout, conf.H2CConnectHeader)
+	if dialContext == nil && (conf.H2CTunnel || conf.H2Tunnel || conf.H2CTransport != nil) {
+		dialContext = newH2TunnelDialContext(
+			conf.H2CTransport,
+			conf.Timeout,
+			conf.H2CConnectHeader,
+			conf.H2Tunnel,
+			conf.TLSConfig,
+		)
 	}
 
 	return &ICAPConn{

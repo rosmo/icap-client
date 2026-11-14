@@ -1,10 +1,12 @@
 package icapclient
 
 import (
+	"crypto/tls"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"strconv"
 	"strings"
@@ -511,6 +513,160 @@ func TestClient_Do(t *testing.T) {
 		for _, tc := range clients {
 			t.Run(tc.name, func(t *testing.T) {
 				urlStr := fmt.Sprintf("icap://%s/respmod", h2cLn.Addr().String())
+
+				optReq, err := NewRequest(t.Context(), MethodOPTIONS, urlStr, nil, nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+
+				client, err := NewClient(tc.opts...)
+				if err != nil {
+					t.Fatal(err)
+				}
+
+				optResp, err := client.Do(optReq)
+				if err != nil {
+					t.Fatal(err)
+				}
+
+				if optResp.StatusCode != http.StatusOK {
+					t.Fatalf("Wanted OPTIONS status code:%d, got:%d", http.StatusOK, optResp.StatusCode)
+				}
+
+				httpReq, err := http.NewRequest(http.MethodGet, "http://someurl.com", nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+
+				httpResp := &http.Response{
+					Status:     "200 OK",
+					StatusCode: http.StatusOK,
+					Proto:      "HTTP/1.0",
+					ProtoMajor: 1,
+					ProtoMinor: 0,
+					Header: http.Header{
+						"Content-Type":   []string{"plain/text"},
+						"Content-Length": []string{"41"},
+					},
+					ContentLength: 41,
+					Body:          io.NopCloser(strings.NewReader("Hello World!This is a GOOD FILE! bye bye!")),
+				}
+
+				req, err := NewRequest(t.Context(), MethodRESPMOD, urlStr, httpReq, httpResp)
+				if err != nil {
+					t.Fatal(err)
+				}
+
+				if err := req.extendHeader(optResp.Header); err != nil {
+					t.Fatal(err)
+				}
+
+				resp, err := client.Do(req)
+				if err != nil {
+					t.Fatal(err)
+				}
+
+				if resp.StatusCode != http.StatusNoContent {
+					t.Errorf("Wanted status code:%d, got:%d", http.StatusNoContent, resp.StatusCode)
+				}
+			})
+		}
+	})
+
+	t.Run("Client Do over H2 TLS Tunnel", func(t *testing.T) {
+		h2Server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodConnect || r.ProtoMajor != 2 || r.TLS == nil {
+				http.Error(w, "bad request", http.StatusBadRequest)
+				return
+			}
+			if r.Header.Get("X-Proxy-Token") != "valid-token" {
+				http.Error(w, "missing header", http.StatusForbidden)
+				return
+			}
+
+			backend, err := net.Dial("tcp", fmt.Sprintf("localhost:%d", port))
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadGateway)
+				return
+			}
+			defer backend.Close()
+
+			rc := http.NewResponseController(w)
+			w.WriteHeader(http.StatusOK)
+			_ = rc.Flush()
+
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				if _, copyErr := io.Copy(backend, r.Body); copyErr != nil {
+					t.Errorf("unexpected error copying from client to target: %v", copyErr)
+				}
+				_ = backend.Close()
+			}()
+
+			buf := make([]byte, 4096)
+			for {
+				n, readErr := backend.Read(buf)
+				if n > 0 {
+					_, _ = w.Write(buf[:n])
+					_ = rc.Flush()
+				}
+				if readErr != nil {
+					break
+				}
+			}
+			<-done
+		}))
+		h2Server.EnableHTTP2 = true
+		h2Server.StartTLS()
+		defer h2Server.Close()
+
+		tlsCfg := &tls.Config{InsecureSkipVerify: true}
+
+		protocols := new(http.Protocols)
+		protocols.SetHTTP2(true)
+		customTransport := &http.Transport{
+			Protocols:         protocols,
+			ForceAttemptHTTP2: true,
+			TLSClientConfig:   tlsCfg,
+		}
+		defer customTransport.CloseIdleConnections()
+
+		connectHdr := http.Header{
+			"X-Proxy-Token": []string{"valid-token"},
+		}
+
+		clients := []struct {
+			name string
+			opts []ConfigOption
+		}{
+			{
+				name: "WithH2Tunnel",
+				opts: []ConfigOption{
+					WithH2Tunnel(),
+					WithTLSConfig(tlsCfg),
+					WithH2ConnectHeader(connectHdr),
+					WithICAPConnectionTimeout(5 * time.Second),
+				},
+			},
+			{
+				name: "WithH2Transport",
+				opts: []ConfigOption{
+					WithH2Transport(customTransport),
+					WithH2ConnectHeader(connectHdr),
+				},
+			},
+			{
+				name: "WithDialContext",
+				opts: []ConfigOption{
+					WithDialContext(NewH2DialContextWithHeader(nil, tlsCfg, connectHdr)),
+				},
+			},
+		}
+
+		for _, tc := range clients {
+			t.Run(tc.name, func(t *testing.T) {
+				urlStr := fmt.Sprintf("icap://%s/respmod", h2Server.Listener.Addr().String())
 
 				optReq, err := NewRequest(t.Context(), MethodOPTIONS, urlStr, nil, nil)
 				if err != nil {
